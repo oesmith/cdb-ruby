@@ -19,7 +19,6 @@
 #   # => "value1"
 module Cdb
   HASHTABLE_MAX_FULLNESS = 0.75
-  HASHTABLE_MIN_SIZE = 16
   INITIAL_HASH = 5381
   NUM_HASHTABLES = 256
 
@@ -40,10 +39,9 @@ module Cdb
   # The cdb hash function is ``h = ((h << 5) + h) ^ c'', with a starting
   # hash of 5381.
   def self.hash(key)
-    hash = key.bytes.inject(Cdb::INITIAL_HASH) do |h, c|
+    key.bytes.inject(Cdb::INITIAL_HASH) do |h, c|
       0xffffffff & ((h << 5) + h) ^ c
     end
-    [hash % Cdb::NUM_HASHTABLES, hash / Cdb::NUM_HASHTABLES]
   end
 
   # Provides read-only access to a cdb.
@@ -56,28 +54,29 @@ module Cdb
     #
     # Returns nil if the key doesn't exist in the cdb.
     def [](key)
-      t, h = Cdb.hash(key)
-      table = tables[t]
-      return nil if table.nil?
-      key_from_table(table, key, h)
+      hash = Cdb.hash(key)
+      table = tables[hash % Cdb::NUM_HASHTABLES]
+      return nil if table.empty?
+      key_from_table(table, key, hash)
     end
 
     private
 
     def key_from_table(table, key, hash)
-      index = hash % table.length
-      until table[index].zero?
-        record = read(table[index])
-        return record.value if record.key == key
+      index = (hash / Cdb::NUM_HASHTABLES) % table.length
+      loop do
+        entry_hash, offset = table[index]
+        return nil if offset.zero?
+        value = maybe_read_value(offset, key) if entry_hash == hash
+        return value unless value.nil?
         index = (index + 1) % table.length
       end
-      nil
     end
 
-    def read(pos)
-      @file.seek(pos)
-      key_length, val_length = @file.read(8).unpack('LL')
-      Pair.new(@file.read(key_length), @file.read(val_length))
+    def maybe_read_value(offset, key)
+      @file.seek(offset)
+      key_length, value_length = @file.read(8).unpack('VV')
+      @file.read(key_length) == key && @file.read(value_length) || nil
     end
 
     def tables
@@ -85,32 +84,19 @@ module Cdb
     end
 
     def load_tables
-      @file.rewind
-      header = @file.read(Cdb::NUM_HASHTABLES * 8).unpack('L*')
-      (0...Cdb::NUM_HASHTABLES).map do |n|
-        pos = header[n * 2]
-        cap = header[n * 2 + 1]
-        load_table(pos, cap)
-      end
+      read_at(0, Cdb::NUM_HASHTABLES * 8)
+        .unpack('V*')
+        .each_slice(2)
+        .map { |offset, capacity| load_table(offset, capacity) }
     end
 
-    def load_table(pos, cap)
-      if cap.zero?
-        nil
-      else
-        @file.seek(pos)
-        @file.read(cap * 4).unpack('L*')
-      end
+    def load_table(offset, cap)
+      read_at(offset, cap * 8).unpack('V*').each_slice(2).to_a
     end
-  end
 
-  # Value class representing a key/value pair read from a cdb.
-  class Pair
-    attr_reader :key, :value
-
-    def initialize(key, value)
-      @key = key
-      @value = value
+    def read_at(offset, len)
+      @file.seek(offset)
+      @file.read(len)
     end
   end
 
@@ -127,8 +113,8 @@ module Cdb
     #
     # Attempting to write the same key twice will cause an error.
     def []=(key, value)
-      pos = append(key, value)
-      index(key, pos)
+      offset = append(key, value)
+      index(key, offset)
     end
 
     # Finish writing the cdb.
@@ -137,7 +123,7 @@ module Cdb
     def close
       lookups = @tables.map { |t| write_table(t) }
       @file.rewind
-      @file.write(lookups.flatten.pack('L*'))
+      @file.write(lookups.flatten.pack('V*'))
     end
 
     # Returns an empty header -- NUM_HASHTABLES pairs of 32-bit integers, all
@@ -150,29 +136,29 @@ module Cdb
 
     def initialize(file)
       @file = file
-      @tables = []
+      @tables = (0...Cdb::NUM_HASHTABLES).map { HashTable.new }
     end
 
     def append(key, value)
-      pos = @file.pos
-      @file.write([key.length, value.length, key, value].pack('LLA*A*'))
-      pos
+      offset = @file.pos
+      @file.write([key.length, value.length, key, value].pack('VVA*A*'))
+      offset
     end
 
-    def index(key, pos)
-      i, h = Cdb.hash(key)
-      table(i).put(HashTableEntry.new(h, key, pos))
-    end
-
-    def table(index)
-      @tables[index] ||= HashTable.new
+    def index(key, offset)
+      hash = Cdb.hash(key)
+      table_for_hash(hash).put(HashTableEntry.new(hash, key, offset))
     end
 
     def write_table(table)
       return [0, 0] if table.nil?
-      pos = @file.pos
+      offset = @file.pos
       @file.write(table.bytes)
-      [pos, table.capacity]
+      [offset, table.capacity]
+    end
+
+    def table_for_hash(hash)
+      @tables[hash % Cdb::NUM_HASHTABLES]
     end
   end
 
@@ -181,7 +167,7 @@ module Cdb
     # Creates an empty hash table.
     def initialize
       @count = 0
-      @slots = empty_slots(Cdb::HASHTABLE_MIN_SIZE)
+      @slots = []
     end
 
     # Adds a hash table entry to the table.
@@ -195,7 +181,9 @@ module Cdb
     # of 32-bit integers representing the offset of each key/value record
     # in the cdb file).
     def bytes
-      @slots.map { |s| s.nil? && 0 || s.pos }.pack('L*')
+      @slots.map { |s| s.nil? && [0, 0] || [s.hash, s.offset] }
+            .flatten
+            .pack('V*')
     end
 
     # Returns the number of slots in the table.
@@ -206,6 +194,7 @@ module Cdb
     private
 
     def fullness
+      return 1.0 if @slots.empty?
       @count / @slots.length
     end
 
@@ -215,12 +204,13 @@ module Cdb
 
     def grow
       entries = @slots.reject(&:nil?)
-      @slots = empty_slots(capacity * 2)
+      new_cap = capacity.zero? && 2 || (capacity * 2)
+      @slots = empty_slots(new_cap)
       entries.each { |entry| put(entry) }
     end
 
     def find_slot(entry)
-      index = entry.hash % capacity
+      index = initial_search_index(entry)
       until @slots[index].nil?
         raise "Duplicate key [#{entry.key}]" if @slots[index].key == entry.key
         index = (index + 1) % capacity
@@ -231,16 +221,20 @@ module Cdb
     def empty_slots(count)
       [nil] * count
     end
+
+    def initial_search_index(entry)
+      (entry.hash / Cdb::NUM_HASHTABLES) % capacity
+    end
   end
 
   # Value class for an entry in a hash table.
   class HashTableEntry
-    attr_reader :hash, :key, :pos
+    attr_reader :hash, :key, :offset
 
-    def initialize(hash, key, pos)
+    def initialize(hash, key, offset)
       @hash = hash
       @key = key
-      @pos = pos
+      @offset = offset
     end
   end
 end
