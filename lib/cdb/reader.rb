@@ -2,7 +2,7 @@ module Cdb
   # Provides read-only access to a cdb.
   class Reader
     def initialize(file)
-      @file = file
+      @file = file.binmode
     end
 
     # Fetches the value associated with the given key.

@@ -34,7 +34,7 @@ module Cdb
     private
 
     def initialize(file)
-      @file = file
+      @file = file.binmode
       @tables = (0...Cdb::NUM_HASHTABLES).map { HashTable.new }
     end
 
