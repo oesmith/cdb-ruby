@@ -24,7 +24,7 @@ require 'cdb/writer'
 module Cdb
   # Write data to a cdb in a file-like object.
   def self.create(file)
-    writer = Writer.create(file)
+    writer = Cdb::Writer.create(file)
     yield(writer)
     writer.close
   end
