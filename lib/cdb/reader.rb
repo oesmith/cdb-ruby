@@ -25,6 +25,7 @@ module Cdb
         value = maybe_read_value(offset, key) if entry_hash == hash
         return value unless value.nil?
       end
+      nil
     end
 
     def maybe_read_value(offset, key)

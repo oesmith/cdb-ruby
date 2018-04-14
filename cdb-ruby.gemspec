@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name = 'cdb-ruby'
-  s.version = '0.0.2'
+  s.version = '0.0.3'
   s.date = '2018-04-14'
   s.summary =
     'A lightweight, pure-ruby reader/writer for DJ Bernstein\'s cdb format'
