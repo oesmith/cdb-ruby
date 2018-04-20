@@ -18,14 +18,14 @@ module Cdb
     private
 
     def key_from_table(table, key, hash)
-      index = (hash / Cdb::NUM_HASHTABLES) % table.length
-      loop do
-        entry_hash, offset = table[index]
+      initial = (hash / Cdb::NUM_HASHTABLES) % table.length
+      (0...table.length).each do |n|
+        entry_hash, offset = table[(initial + n) % table.length]
         return nil if offset.zero?
         value = maybe_read_value(offset, key) if entry_hash == hash
         return value unless value.nil?
-        index = (index + 1) % table.length
       end
+      nil
     end
 
     def maybe_read_value(offset, key)
