@@ -1,11 +1,13 @@
 module Cdb
   # Provides write-only access to a cdb.
   class Writer
+    private_class_method :new
+
     # Initializes an empty cdb for writing to the given file-like object.
     def self.create(file)
       file.truncate(0)
       file.write(empty_header)
-      Writer.new(file)
+      new(file)
     end
 
     # Writes a key/value pair to the cdb.
