@@ -7,14 +7,18 @@ Cdbs are fast, immutable, on-disk hashtables. They're great for storing modest
 no enumeration or traversal.
 
 ```ruby
+require 'cdb'
+
 file = File.new('table.cdb')
-Cdb.writer(file) do |cdb|
+Cdb.create(file) do |cdb|
   cdb['key1'] = 'value1'
   cdb['key2'] = 'value2'
   # ...
 end
 
-reader = Cdb.reader(file)
+reader = Cdb.open(file)
 reader['key1']
 # => "value1"
+
+file.close
 ```
